@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ServerRadar 性能探针</title>
+    <!-- 引入 Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { background-color: #f8fafc; color: #1f2937; }
+        .server-card { transition: all 0.3s ease; border-top: 4px solid #6366f1; }
+        .server-card:hover { transform: translateY(-3px); box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1); }
+        .page-btn { cursor: pointer; padding: 4px 10px; border-radius: 4px; background: #e5e7eb; color: #374151; font-size: 0.875rem; margin: 0 4px;}
+        .page-btn:hover { background: #d1d5db; }
+        .page-btn.disabled { opacity: 0.5; cursor: not-allowed; pointer-events: none;}
+    </style>
+</head>
+<body class="p-4 md:p-8 text-gray-800">
+    <div class="max-w-7xl mx-auto">
+        <h1 class="text-3xl font-bold mb-2 text-center text-indigo-700 tracking-wide flex justify-center items-center">
+            <svg class="w-8 h-8 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
+            ServerRadar 跨海云端探针监控
+        </h1>
+        <p class="text-center text-gray-500 mb-8"><span class="bg-indigo-100 text-indigo-800 text-xs px-2 py-1 rounded">硬盘测速: 并发直指底层 | 网络测速: 真实体包吞吐 | 频率: 周期巡航</span></p>
+        
+        <div id="servers-container" class="grid grid-cols-1 xl:grid-cols-2 gap-8">
+            <!-- 占位符 -->
+        </div>
+    </div>
+
+    <script>
+        function formatSpeed(bytesPerSec) {
+            if (bytesPerSec === 0 || !bytesPerSec) return '0 B/s';
+            const k = 1024;
+            const sizes = ['B/s', 'KB/s', 'MB/s', 'GB/s'];
+            const i = Math.floor(Math.log(bytesPerSec) / Math.log(k));
+            return parseFloat((bytesPerSec / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+        }
+
+        const pageSize = 15;
+        let pagenationState = {};
+        let globalData = null;
+
+        function renderTable(ip, historyData) {
+            if (!historyData || historyData.length === 0) return `<div class="text-center py-8 text-gray-400">正在等待第一波航行数据归港...</div>`;
+            
+            let curPage = pagenationState[ip] || 0;
+            let totalPages = Math.ceil(historyData.length / pageSize);
+            if (curPage >= totalPages) curPage = totalPages - 1;
+            if (curPage < 0) curPage = 0;
+            pagenationState[ip] = curPage;
+
+            let startIdx = curPage * pageSize;
+            let pageData = historyData.slice(startIdx, startIdx + pageSize);
+
+            let tableHtml = `
+            <div class="overflow-x-auto rounded-lg border border-gray-200 shadow-inner">
+                <table class="w-full text-sm text-left">
+                    <thead class="bg-gray-50 text-gray-600 font-medium">
+                        <tr>
+                            <th class="px-4 py-3">时间</th>
+                            <th class="px-4 py-3 text-red-500">硬盘写</th>
+                            <th class="px-4 py-3 text-blue-500">硬盘读</th>
+                            <th class="px-4 py-3 text-green-500">网出(下行)</th>
+                            <th class="px-4 py-3 text-purple-500">网入(上推)</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-gray-100 bg-white">
+            `;
+            
+            pageData.forEach((row, idx) => {
+                const d = new Date(row.time * 1000);
+                const timeStr = [d.getHours(), d.getMinutes(), d.getSeconds()].map(n => n.toString().padStart(2, '0')).join(':');
+                tableHtml += `
+                    <tr class="hover:bg-gray-50 transition">
+                        <td class="px-4 py-2 font-mono text-gray-500">${timeStr}</td>
+                        <td class="px-4 py-2 font-mono font-semibold">${formatSpeed(row.disk_write)}</td>
+                        <td class="px-4 py-2 font-mono font-semibold">${formatSpeed(row.disk_read)}</td>
+                        <td class="px-4 py-2 font-mono font-semibold">${formatSpeed(row.net_out)}</td>
+                        <td class="px-4 py-2 font-mono font-semibold">${formatSpeed(row.net_in)}</td>
+                    </tr>
+                `;
+            });
+            tableHtml += `</tbody></table></div>`;
+
+            // 分页控制栏
+            let pageControl = `
+            <div class="flex justify-between items-center mt-4">
+                <span class="text-xs text-gray-500">总计 ${historyData.length} 条记录 (第 ${curPage + 1}/${totalPages} 页)</span>
+                <div>
+                    <button class="page-btn ${curPage === 0 ? 'disabled' : ''}" onclick="changePage('${ip}', -1)">上一页</button>
+                    <button class="page-btn ${curPage >= totalPages - 1 ? 'disabled' : ''}" onclick="changePage('${ip}', 1)">下一页</button>
+                </div>
+            </div>
+            `;
+            
+            return tableHtml + pageControl;
+        }
+
+        window.changePage = function(ip, delta) {
+            pagenationState[ip] = (pagenationState[ip] || 0) + delta;
+            renderAllData(); 
+        }
+
+        function initCards(servers) {
+            const container = document.getElementById('servers-container');
+            container.innerHTML = ''; 
+
+            servers.forEach(srv => {
+                const sid = srv.id; 
+                pagenationState[sid] = 0; 
+                const dom = `
+                <div class="bg-white rounded-xl shadow-lg p-6 server-card flex flex-col h-full">
+                    <div class="flex justify-between items-center mb-6">
+                        <h2 class="text-2xl font-bold text-gray-800 flex items-center">
+                            <span class="text-3xl mr-2">🚀</span>
+                            ${srv.name}
+                        </h2>
+                        <div class="text-xs text-gray-500 bg-green-50 text-green-700 px-3 py-1.5 rounded-full border border-green-200 flex items-center shadow-sm">
+                            <span class="w-2 h-2 rounded-full bg-green-500 mr-2 animate-pulse"></span> 探测运转中
+                        </div>
+                    </div>
+                    
+                    <div class="grid grid-cols-2 gap-4 mb-4">
+                        <div class="bg-gradient-to-br from-blue-50 to-blue-100 p-4 rounded-xl border border-blue-100">
+                            <div class="text-xs text-blue-600 font-bold mb-2 flex items-center">
+                                <svg class="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4m0 5c0 2.21-3.582 4-8 4s-8-1.79-8-4"></path></svg>
+                                均值分析 - 磁盘吞吐量
+                            </div>
+                            <div class="text-lg font-black text-blue-800 tracking-tight" id="disk-${sid}">-- / --</div>
+                        </div>
+                        <div class="bg-gradient-to-br from-purple-50 to-purple-100 p-4 rounded-xl border border-purple-100">
+                            <div class="text-xs text-purple-600 font-bold mb-2 flex items-center">
+                                <svg class="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4"></path></svg>
+                                均值分析 - 网络下行与上推
+                            </div>
+                            <div class="text-lg font-black text-purple-800 tracking-tight" id="net-${sid}">-- / --</div>
+                        </div>
+                    </div>
+
+                    <!-- 历史记录表格 -->
+                    <div id="table-${sid}" class="flex-grow mt-2"></div>
+                </div>`;
+                container.innerHTML += dom;
+            });
+        }
+
+        function renderAllData() {
+            if (!globalData) return;
+            const data = globalData;
+            data.servers.forEach(srv => {
+                const sid = srv.id;
+                const hist = data.history[sid] || [];
+                document.getElementById(`table-${sid}`).innerHTML = renderTable(sid, hist);
+
+                if (hist.length > 0) {
+                    let avgW = 0, avgR = 0, avgNIn = 0, avgNOut = 0;
+                    hist.forEach(h => {
+                        avgW += h.disk_write; avgR += h.disk_read;
+                        avgNIn += h.net_in; avgNOut += h.net_out;
+                    });
+                    const count = hist.length;
+                    document.getElementById(`disk-${sid}`).innerHTML = `<span class="text-blue-500" title="平均盘读">${formatSpeed(avgR/count)}</span> <span class="text-gray-300 font-light mx-1">/</span> <span class="text-blue-700" title="平均盘写">${formatSpeed(avgW/count)}</span>`;
+                    document.getElementById(`net-${sid}`).innerHTML = `<span class="text-green-500" title="平均网出">${formatSpeed(avgNOut/count)}</span> <span class="text-gray-300 font-light mx-1">/</span> <span class="text-purple-600" title="平均网入">${formatSpeed(avgNIn/count)}</span>`;
+                }
+
+            });
+        }
+
+        async function fetchData() {
+            try {
+                const res = await fetch('/api/stats');
+                const data = await res.json();
+                
+                if (!document.getElementById('servers-container').innerHTML.trim() && data.servers.length > 0) {
+                    initCards(data.servers);
+                }
+
+                globalData = data;
+                renderAllData();
+
+            } catch (err) {
+                console.error("Fetch Data Error:", err);
+            }
+        }
+
+        fetchData();
+        setInterval(fetchData, 10000); 
+    </script>
+</body>
+</html>

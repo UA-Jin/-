@@ -1,0 +1,16 @@
+{
+  "port": 8888,
+  "probe_interval_seconds": 300,
+  "disk_test_size_mb": 500,
+  "net_test_size_mb": 5,
+  "servers": [
+    {
+      "id": "node-hk",
+      "ip": "1.1.1.1",
+      "port": 22,
+      "user": "root",
+      "pwd": "PASSWORD",
+      "name": "海外节点测试机"
+    }
+  ]
+}
